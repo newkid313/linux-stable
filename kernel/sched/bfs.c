@@ -136,7 +136,7 @@
 
 void print_scheduler_version(void)
 {
-	printk(KERN_INFO "BFS CPU scheduler v0.424 by Con Kolivas.\n");
+	printk(KERN_INFO "BFS CPU scheduler v0.425 by Con Kolivas.\n");
 }
 
 /*
@@ -1695,7 +1695,6 @@ void sched_fork(struct task_struct *p)
 	 * event cannot wake it up and insert it on the runqueue either.
 	 */
 	p->state = TASK_RUNNING;
-	set_task_cpu(p, cpu);
 
 	/* Should be reset in fork.c but done here for ease of bfs patching */
 	p->utime =
@@ -1728,6 +1727,8 @@ void sched_fork(struct task_struct *p)
 	}
 
 	curr = current;
+	rq = task_grq_lock_irq(curr);
+	set_task_cpu(p, cpu);
 	/*
 	 * Make sure we do not leak PI boosting priority to the child.
 	 */
@@ -1747,7 +1748,7 @@ void sched_fork(struct task_struct *p)
 	task_thread_info(p)->preempt_count = 1;
 #endif
 	if (unlikely(p->policy == SCHED_FIFO))
-		goto out;
+		goto out_unlock;
 	/*
 	 * Share the timeslice between parent and child, thus the
 	 * total amount of pending timeslices in the system doesn't change,
@@ -1757,7 +1758,6 @@ void sched_fork(struct task_struct *p)
 	 * value. rq->rq_deadline is only modified within schedule() so it
 	 * is always equal to current->deadline.
 	 */
-	rq = task_grq_lock_irq(curr);
 	if (likely(rq->rq_time_slice >= RESCHED_US * 2)) {
 		rq->rq_time_slice /= 2;
 		p->time_slice = rq->rq_time_slice;
@@ -1773,8 +1773,8 @@ void sched_fork(struct task_struct *p)
 		time_slice_expired(p);
 	}
 	p->last_ran = rq->rq_last_ran;
+out_unlock:
 	task_grq_unlock_irq();
-out:
 	put_cpu();
 }
 
@@ -1791,9 +1791,9 @@ void wake_up_new_task(struct task_struct *p)
 	unsigned long flags;
 	struct rq *rq;
 
-	rq = task_grq_lock(p, &flags);
 	p->state = TASK_RUNNING;
 	parent = p->parent;
+	rq = task_grq_lock(p, &flags);
 	/* Unnecessary but small chance that the parent changed CPU */
 	set_task_cpu(p, task_cpu(parent));
 	activate_task(p, rq);
@@ -2262,6 +2262,10 @@ static inline u64 steal_ticks(u64 steal)
 
 static void update_rq_clock_task(struct rq *rq, s64 delta)
 {
+/*
+ * In theory, the compile should just see 0 here, and optimize out the call
+ * to sched_rt_avg_update. But I don't trust it...
+ */
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 	s64 irq_delta = irq_time_read(cpu_of(rq)) - rq->prev_irq_time;
 
@@ -2287,8 +2291,9 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 	delta -= irq_delta;
 #endif
 #ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
-	if (static_branch((&paravirt_steal_rq_enabled))) {
-		u64 st, steal = paravirt_steal_clock(cpu_of(rq));
+	if (static_key_false((&paravirt_steal_rq_enabled))) {
+		s64 steal = paravirt_steal_clock(cpu_of(rq));
+		u64 st;
 
 		steal -= rq->prev_steal_time_rq;
 
@@ -5976,8 +5981,6 @@ static int __init isolated_cpu_setup(char *str)
 }
 
 __setup("isolcpus=", isolated_cpu_setup);
-
-#define SD_NODES_PER_DOMAIN 16
 
 static const struct cpumask *cpu_cpu_mask(int cpu)
 {
