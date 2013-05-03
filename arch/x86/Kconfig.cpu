@@ -291,8 +291,7 @@ config X86_GENERIC
 	  generic optimizations.
 
 config X86_MARCH_NATIVE
-	bool "Use -march=native cflag (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
+	bool "Use -march=native cflag (EXPERIMENTAL)
 	help
 	  Setting Y here, will result in passing the -march=native and
 	  -mtune=native cflags to GCC while compiling the kernel, which
